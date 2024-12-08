@@ -1,0 +1,176 @@
+version: '3.8'
+
+services:
+
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: "portainer"
+    ports:
+      - '9000:9000'
+    volumes:
+        - portainer_data:/data
+        - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+    networks:
+      - sloboda-01_network
+
+  ingress:
+    image: 'nginx:1.27.2'
+    container_name: 'ingress'
+    restart: unless-stopped
+    networks:
+      - sloboda-01_network
+    ports:
+      - '80:80'
+      - '443:443'
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    volumes:
+      - ./nginx_html_data:/usr/share/nginx/html
+      - ./nginx_conf_data:/etc/nginx/conf.d
+      - ./certbot/www/:/var/www/certbot/:ro
+      - ./certbot/conf/:/etc/letsencrypt/:ro
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: certbot
+    restart: unless-stopped
+    networks:
+        - sloboda-01_network
+    volumes:
+      - ./certbot/www/:/var/www/certbot/:rw
+      - ./certbot/conf/:/etc/letsencrypt/:rw
+      - certbot_letsencrypt:/var/lib/letsencrypt
+
+  kuma:
+    image: "louislam/uptime-kuma:1"
+    container_name: "kuma"
+    volumes:
+      - uptime_kuma_data:/app/data
+      - /var/run/docker.sock:/app/data/docker.sock
+    restart: unless-stopped
+    networks:
+      - sloboda-01_network
+
+  mysql_ghost:
+    image: 'mysql:5.7'
+    container_name: 'mysql-ghost'
+    restart: unless-stopped
+    networks:
+      - sloboda-01_network
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: 'ghost-db'
+      MYSQL_USER: 'ghost-user'
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    healthcheck:
+      test: [ "CMD", "mysqladmin" ,"ping", "-h", "localhost" ]
+      timeout: 20s
+      retries: 10
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  ghost:
+    image: 'ghost:4.16.0'
+    container_name: 'ghost'
+    restart: always
+    networks:
+      - sloboda-01_network
+    environment:
+      url: 'https://blog-sloboda-01.sloboda.fr'
+      database__client: 'mysql'
+      database__connection__host: 'mysql-ghost'
+      database__connection__user: 'ghost-user'
+      database__connection__password: ${MYSQL_PASSWORD}
+      database__connection__database: 'ghost-db'
+    volumes:
+      - ghost_data:/var/lib/ghost/content
+    healthcheck:
+      test: "node -e 'require(\"http\").get({host: \"localhost\", port: 2368, path: \"/ghost/api/v3/admin/site/\", headers: {\"X-Forwarded-Proto\": \"https\"}}, res => process.exit(res.statusCode === 200 ? 0 : 1)).on(\"error\", () => process.exit(1));'"
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    depends_on:
+      - mysql_ghost
+
+  postgresql:
+    image: "postgres:15"
+    container_name: "postgresql"
+    restart: unless-stopped
+    ports:
+      - "9856:5432"
+    environment:
+      POSTGRES_USER: "db-admin"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: "default-db"
+      HIVE_DB: "hive-db"
+      HIVE_USER: "hive-user"
+      HIVE_PASSWORD: ${HIVE_PASSWORD}
+      SANDBOX_DB: "sandbox-db"
+      SANDBOX_USER: "sandbox-user"
+      SANDBOX_PASSWORD: ${SANDBOX_PASSWORD}
+    networks:
+      - sloboda-01_network
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U db-admin -d default-db" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+    volumes:
+      - ./postgresql_init:/docker-entrypoint-initdb.d
+      - postgresql_data:/var/lib/postgresql/data
+#    command: ["bash", "/docker-entrypoint-initdb.d/init-db.sh"]
+
+  jaeger:
+    image: "jaegertracing/all-in-one:1.63.0"
+    container_name: "jaeger"
+    restart: unless-stopped
+    ports:
+      - '16686:16686'
+      - '4317:4317'
+      - '4318:4318'
+      - '14250:14250'
+      - '14268:14268'
+      - '14269:14269'
+      - '6831:6831/udp'
+      - '9411:9411'
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    volumes:
+      - jaeger_data:/tmp
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:14269/"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    networks:
+      - sloboda-01_network
+
+volumes:
+  uptime_kuma_data:
+    driver: local
+  mysql_data:
+    driver: local
+  postgresql_data:
+    driver: local
+  ghost_data:
+    driver: local
+  certbot_letsencrypt:
+    driver: local
+  jaeger_data:
+    driver: local
+  portainer_data:
+    driver: local
+
+networks:
+  sloboda-01_network:
+    driver: bridge
